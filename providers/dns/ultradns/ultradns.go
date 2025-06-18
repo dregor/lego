@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	// "encoding/json"
 
 	"github.com/go-acme/lego/v4/challenge"
 	"github.com/go-acme/lego/v4/challenge/dns01"
@@ -13,6 +14,7 @@ import (
 	"github.com/ultradns/ultradns-go-sdk/pkg/client"
 	"github.com/ultradns/ultradns-go-sdk/pkg/record"
 	"github.com/ultradns/ultradns-go-sdk/pkg/rrset"
+	"github.com/ultradns/ultradns-go-sdk/pkg/zone"
 )
 
 // Environment variables names.
@@ -106,31 +108,47 @@ func (d *DNSProvider) Present(domain, token, keyAuth string) error {
 	info := dns01.GetChallengeInfo(domain, keyAuth)
 
 	authZone, err := dns01.FindZoneByFqdn(info.EffectiveFQDN)
+
 	if err != nil {
-		return fmt.Errorf("ultradns: could not find zone for domain %q: %w", domain, err)
+	 	return fmt.Errorf("ultradns: could not find zone for domain %q: %w", domain, err)
 	}
 
-	recordService, err := record.Get(d.client)
+	zoneService,err := zone.Get(d.client)
+	if err != nil {
+		return fmt.Errorf("ultradns: %w", err)
+	} 
+
+	_, resZone, err := zoneService.ReadZone(authZone)
+
+	zoneOrAlias := authZone
+	EffectiveFQDN := info.EffectiveFQDN
+
+	if resZone.OriginalZoneName != "" {
+		zoneOrAlias = resZone.OriginalZoneName
+		EffectiveFQDN = "_acme-challenge." + zoneOrAlias
+	} 
+
 	if err != nil {
 		return fmt.Errorf("ultradns: %w", err)
 	}
 
 	rrSetKeyData := &rrset.RRSetKey{
-		Owner:      info.EffectiveFQDN,
-		Zone:       authZone,
+		Owner:      EffectiveFQDN,
+		Zone:       zoneOrAlias,
 		RecordType: "TXT",
 	}
 
-	res, _, _ := recordService.Read(rrSetKeyData)
-
 	rrSetData := &rrset.RRSet{
-		OwnerName: info.EffectiveFQDN,
+		OwnerName: zoneOrAlias,
 		TTL:       d.config.TTL,
 		RRType:    "TXT",
 		RData:     []string{info.Value},
 	}
 
-	if res != nil && res.StatusCode == 200 {
+	recordService, err := record.Get(d.client)
+	resRecordCode, _, _ := recordService.Read(rrSetKeyData)
+
+	if resRecordCode != nil && resRecordCode.StatusCode == 200 {
 		_, err = recordService.Update(rrSetKeyData, rrSetData)
 	} else {
 		_, err = recordService.Create(rrSetKeyData, rrSetData)
@@ -151,14 +169,33 @@ func (d *DNSProvider) CleanUp(domain, token, keyAuth string) error {
 		return fmt.Errorf("ultradns: could not find zone for domain %q: %w", domain, err)
 	}
 
+	zoneService,err := zone.Get(d.client)
+	if err != nil {
+		return fmt.Errorf("ultradns: %w", err)
+	}
+
+	_, resZone, err := zoneService.ReadZone(authZone)
+
+	zoneOrAlias := authZone
+	EffectiveFQDN := info.EffectiveFQDN
+
+	if resZone.OriginalZoneName != "" {
+		zoneOrAlias = resZone.OriginalZoneName
+		EffectiveFQDN = "_acme-challenge." + zoneOrAlias
+	} 
+
+	if err != nil {
+		return fmt.Errorf("ultradns: %w", err)
+	}
+
 	recordService, err := record.Get(d.client)
 	if err != nil {
 		return fmt.Errorf("ultradns: %w", err)
 	}
 
 	rrSetKeyData := &rrset.RRSetKey{
-		Owner:      info.EffectiveFQDN,
-		Zone:       authZone,
+		Owner:      EffectiveFQDN,
+		Zone:       zoneOrAlias,
 		RecordType: "TXT",
 	}
 
