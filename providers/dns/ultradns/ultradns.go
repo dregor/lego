@@ -62,8 +62,6 @@ func NewDefaultConfig() *Config {
 }
 
 // NewDNSProvider returns a DNSProvider instance configured for ultradns.
-// Credentials must be passed in the environment variables:
-// ULTRADNS_USERNAME and ULTRADNS_PASSWORD.
 func NewDNSProvider() (*DNSProvider, error) {
 	values, err := env.Get(EnvUsername, EnvPassword)
 	if err != nil {
@@ -112,15 +110,15 @@ func (d *DNSProvider) Present(domain, token, keyAuth string) error {
 		return fmt.Errorf("ultradns: could not find zone for domain %q: %w", domain, err)
 	}
 
-	// --- Блок проверки алиасов ---
 	zoneService, err := zone.Get(d.client)
 	if err != nil {
 		return fmt.Errorf("ultradns: %w", err)
 	}
 
 	_, resZone, err := zoneService.ReadZone(authZone)
+	// ИСПРАВЛЕНО: Безопасная проверка ошибки до обращения к resZone
 	if err != nil {
-		return fmt.Errorf("ultradns: could not read zone %q: %w", authZone, err)
+		return fmt.Errorf("ultradns: read zone error: %w", err)
 	}
 
 	zoneOrAlias := authZone
@@ -130,12 +128,6 @@ func (d *DNSProvider) Present(domain, token, keyAuth string) error {
 		zoneOrAlias = resZone.OriginalZoneName
 		effectiveFQDN = "_acme-challenge." + zoneOrAlias
 	}
-	// -----------------------------
-
-	recordService, err := record.Get(d.client)
-	if err != nil {
-		return fmt.Errorf("ultradns: %w", err)
-	}
 
 	rrSetKeyData := &rrset.RRSetKey{
 		Owner:      effectiveFQDN,
@@ -143,21 +135,50 @@ func (d *DNSProvider) Present(domain, token, keyAuth string) error {
 		RecordType: "TXT",
 	}
 
-	resp, _, _ := recordService.Read(rrSetKeyData)
-
-	rrSetData := &rrset.RRSet{
-		OwnerName: effectiveFQDN, // В оригинале используется FQDN, оставил для совместимости
-		TTL:       d.config.TTL,
-		RRType:    "TXT",
-		RData:     []string{info.Value},
+	recordService, err := record.Get(d.client)
+	if err != nil {
+		return fmt.Errorf("ultradns: %w", err)
 	}
 
-	if resp != nil && resp.StatusCode == http.StatusOK {
+	// 1. Пытаемся прочитать существующие записи
+	resRecordCode, resList, _ := recordService.Read(rrSetKeyData)
+
+	// 2. Формируем новый список RData
+	rdata := []string{info.Value}
+	
+	// Если записи уже есть (например, при выпуске Wildcard), объединяем их
+	if resRecordCode != nil && resRecordCode.StatusCode == http.StatusOK && resList != nil {
+		for _, existingRRSet := range resList.RRSets {
+			for _, v := range existingRRSet.RData {
+				// Проверка на дубликаты, чтобы не раздувать запись
+				isDuplicate := false
+				for _, current := range rdata {
+					if v == current {
+						isDuplicate = true
+						break
+					}
+				}
+				if !isDuplicate {
+					rdata = append(rdata, v)
+				}
+			}
+		}
+	}
+
+	rrSetData := &rrset.RRSet{
+		OwnerName: zoneOrAlias,
+		TTL:       d.config.TTL,
+		RRType:    "TXT",
+		RData:     rdata,
+	}
+
+	// 3. Обновляем или создаем
+	if resRecordCode != nil && resRecordCode.StatusCode == http.StatusOK {
 		_, err = recordService.Update(rrSetKeyData, rrSetData)
 	} else {
 		_, err = recordService.Create(rrSetKeyData, rrSetData)
 	}
-
+	
 	if err != nil {
 		return fmt.Errorf("ultradns: %w", err)
 	}
@@ -174,7 +195,6 @@ func (d *DNSProvider) CleanUp(domain, token, keyAuth string) error {
 		return fmt.Errorf("ultradns: could not find zone for domain %q: %w", domain, err)
 	}
 
-	// --- Блок проверки алиасов ---
 	zoneService, err := zone.Get(d.client)
 	if err != nil {
 		return fmt.Errorf("ultradns: %w", err)
@@ -182,7 +202,7 @@ func (d *DNSProvider) CleanUp(domain, token, keyAuth string) error {
 
 	_, resZone, err := zoneService.ReadZone(authZone)
 	if err != nil {
-		return fmt.Errorf("ultradns: could not read zone %q: %w", authZone, err)
+		return fmt.Errorf("ultradns: read zone error: %w", err)
 	}
 
 	zoneOrAlias := authZone
@@ -192,7 +212,6 @@ func (d *DNSProvider) CleanUp(domain, token, keyAuth string) error {
 		zoneOrAlias = resZone.OriginalZoneName
 		effectiveFQDN = "_acme-challenge." + zoneOrAlias
 	}
-	// -----------------------------
 
 	recordService, err := record.Get(d.client)
 	if err != nil {
