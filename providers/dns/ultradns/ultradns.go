@@ -118,17 +118,16 @@ func (d *DNSProvider) Present(domain, token, keyAuth string) error {
 	} 
 
 	_, resZone, err := zoneService.ReadZone(authZone)
+	if err != nil {
+		return fmt.Errorf("ultradns: %w", err)
+	}
 
 	zoneOrAlias := authZone
 	EffectiveFQDN := info.EffectiveFQDN
 
-	if resZone.OriginalZoneName != "" {
+	if resZone != nil && resZone.OriginalZoneName != "" {
 		zoneOrAlias = resZone.OriginalZoneName
 		EffectiveFQDN = "_acme-challenge." + zoneOrAlias
-	} 
-
-	if err != nil {
-		return fmt.Errorf("ultradns: %w", err)
 	}
 
 	rrSetKeyData := &rrset.RRSetKey{
@@ -145,6 +144,9 @@ func (d *DNSProvider) Present(domain, token, keyAuth string) error {
 	}
 
 	recordService, err := record.Get(d.client)
+	if err != nil {
+		return fmt.Errorf("ultradns: %w", err)
+	}
 	resRecordCode, _, _ := recordService.Read(rrSetKeyData)
 
 	if resRecordCode != nil && resRecordCode.StatusCode == 200 {
